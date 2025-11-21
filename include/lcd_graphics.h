@@ -109,10 +109,6 @@ static inline color_t lcd_rgb(uint8_t r, uint8_t g, uint8_t b) {
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
 }
 
-void lcd_show_frame(void);
-
-
-
 /**
  * @brief Actualiza la pantalla (muestra el frame actual)
  */

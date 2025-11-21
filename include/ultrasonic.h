@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+
 /* Constantes de configuración */
 #define ULTRASONIC_MIN_DISTANCE_CM  5      /**< Distancia mínima detectable */
 #define ULTRASONIC_MAX_DISTANCE_CM  200    /**< Distancia máxima útil */

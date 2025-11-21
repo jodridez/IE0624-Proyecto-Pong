@@ -12,7 +12,6 @@
 /* Variables externas del framebuffer (definidas en lcd-spi.c) */
 extern uint16_t *cur_frame;
 
-
 void lcd_init(void) {
     /* Inicializar SDRAM para framebuffer */
     sdram_init();
@@ -21,7 +20,8 @@ void lcd_init(void) {
     lcd_spi_init();
     
     /* Inicializar librería gráfica con la función lcd_draw_pixel de lcd-spi.c */
-    gfx_init(gfx_drawPixel, LCD_WIDTH, LCD_HEIGHT);
+    gfx_init(lcd_draw_pixel, LCD_WIDTH, LCD_HEIGHT);
+    
     /* Limpiar pantalla */
     lcd_clear(COLOR_BLACK);
     lcd_update();
@@ -85,8 +85,4 @@ void lcd_draw_number(int16_t x, int16_t y, int32_t num,
 
 color_t* lcd_get_framebuffer(void) {
     return cur_frame;
-}
-
-void lcd_show_frame(void) {
-    gfx_update(); // Llama a la función de actualización de gfx
 }

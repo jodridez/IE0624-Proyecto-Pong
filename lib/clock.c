@@ -39,12 +39,10 @@ void sys_tick_handler(void)
 }
 
 /* simple sleep for delay milliseconds */
-void milli_sleep(uint32_t delay)
+void msleep(uint32_t delay)
 {
 	uint32_t wake = system_millis + delay;
-	while (wake > system_millis) {
-		continue;
-	}
+	while (wake > system_millis);
 }
 
 /* Getter function for the current time */

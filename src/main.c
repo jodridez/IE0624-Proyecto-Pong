@@ -48,17 +48,9 @@ static uint32_t get_time_ms(void) {
 /**
  * @brief Delay en milisegundos
  */
-void delay_ms(uint32_t ms) {
-    uint32_t start = get_time_ms();
-    while ((get_time_ms() - start) < ms);
+static void delay_ms(uint32_t ms) {
+    msleep(ms);
 }
-
-void delay_us(uint32_t us) {
-    uint32_t start = get_time_ms();
-    while ((get_time_ms() - start) < (us / 1000)); // Aproximación
-}
-
-
 
 /**
  * @brief Configura botón de usuario para start/reset
@@ -89,6 +81,10 @@ static void update_paddles_from_sensors(void) {
     }
     
     last_sensor_update = current_time;
+
+        /* Usar sensores simulados en lugar de reales */
+    simulate_sensors();
+    
     
     /* Leer sensores */
     ultrasonic_trigger(SENSOR_LEFT);
@@ -150,7 +146,7 @@ static void calibrate_sensors(void) {
     
     delay_ms(1000);
     
-    ultrasonic_calibrate();
+    //ultrasonic_calibrate();
     
     lcd_draw_string(60, 200, "Ready!", COLOR_GREEN, COLOR_BLACK);
     delay_ms(1000);
@@ -179,7 +175,7 @@ static void game_loop(void) {
         /* Actualizar sensores periódicamente */
         if (game_is_playing(&game) || 
             game_get_state(&game) == GAME_STATE_COUNTDOWN) {
-            update_paddles_from_sensors();
+            update_paddles_simulated();
         }
         
         /* Detectar presión de botón (con debounce) */
@@ -214,6 +210,34 @@ static void game_loop(void) {
         }
         #endif
     }
+}
+
+
+/**
+ * @brief Simula sensores cuando no están conectados
+ */
+static void simulate_sensors(void) {
+    /* Posición simulada basada en tiempo */
+    uint32_t time = get_time_ms();
+    uint32_t left_pos = (time / 20) % (GAME_HEIGHT - PADDLE_HEIGHT);
+    uint32_t right_pos = (time / 25) % (GAME_HEIGHT - PADDLE_HEIGHT);
+    
+    game_update_paddle(&game, &game.paddle_left, left_pos);
+    game_update_paddle(&game, &game.paddle_right, right_pos);
+}
+
+/**
+ * @brief Actualiza paletas con sensores simulados
+ */
+static void update_paddles_simulated(void) {
+    uint32_t current_time = get_time_ms();
+    
+    if (current_time - last_sensor_update < SENSOR_UPDATE_INTERVAL_MS) {
+        return;
+    }
+    
+    last_sensor_update = current_time;
+    simulate_sensors();
 }
 
 /**
@@ -261,3 +285,5 @@ int main(void) {
     /* Nunca debería llegar aquí */
     return 0;
 }
+
+

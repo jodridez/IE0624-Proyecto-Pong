@@ -542,9 +542,3 @@ uint16_t gfx_height(void)
 	return __gfx_state._height;
 }
 
-
-// Añadir al final de gfx.c
-void gfx_update(void) {
-    // Si tu hardware tiene un framebuffer, aquí es donde lo enviarías a la pantalla.
-    // Por ahora puede dejarse vacío si lcd_show_frame() es suficiente.
-}

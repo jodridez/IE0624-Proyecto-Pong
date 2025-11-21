@@ -22,9 +22,7 @@
  *
  */
 
-#define _GNU_SOURCE
 #include <stdint.h>
-#include <stdio.h>
 #include <setjmp.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
@@ -45,11 +43,11 @@
  */
 #define RECV_BUF_SIZE	128		/* Arbitrary buffer size */
 char recv_buf[RECV_BUF_SIZE];
-static volatile int recv_ndx_nxt;	/* Next place to store */
-static volatile int recv_ndx_cur;	/* Next place to read */
+volatile int recv_ndx_nxt;		/* Next place to store */
+volatile int recv_ndx_cur;		/* Next place to read */
 
 /* For interrupt handling we add a new function which is called
- * when receive interrupts happen. The name (usart1_isr) is created
+ * when recieve interrupts happen. The name (usart1_isr) is created
  * by the irq.json file in libopencm3 calling this interrupt for
  * USART1 'usart1', adding the suffix '_isr', and then weakly binding
  * it to the 'do nothing' interrupt function in vec.c.
@@ -69,9 +67,13 @@ void usart1_isr(void)
 		if (reg & USART_SR_RXNE) {
 			recv_buf[recv_ndx_nxt] = USART_DR(CONSOLE_UART);
 #ifdef RESET_ON_CTRLC
-			/* Check for "reset" */
+			/*
+			 * This bit of code will jump to the ResetHandler if you
+			 * hit ^C
+			 */
 			if (recv_buf[recv_ndx_nxt] == '\003') {
 				scb_reset_system();
+				return; /* never actually reached */
 			}
 #endif
 			/* Check for "overrun" */
@@ -80,8 +82,8 @@ void usart1_isr(void)
 				recv_ndx_nxt = i;
 			}
 		}
-	} while ((reg & USART_SR_RXNE) != 0);
-				/* can read back-to-back interrupts */
+	} while ((reg & USART_SR_RXNE) != 0); /* can read back-to-back
+						 interrupts */
 }
 
 /*
@@ -182,14 +184,14 @@ int console_gets(char *s, int len)
  */
 void console_setup(int baud)
 {
+
 	/* MUST enable the GPIO clock in ADDITION to the USART clock */
 	rcc_periph_clock_enable(RCC_GPIOA);
 
-	/* This example uses PD5 and PD6 for Tx and Rx respectively
+	/* This example uses PA9 and PA10 for Tx and Rx respectively
 	 * but other pins are available for this role on USART1 (our chosen
-	 * USART) as well, such as PA2 and PA3. You can also split them
-	 * so PA2 for Tx, PD6 for Rx but you would have to enable both
-	 * the GPIOA and GPIOD clocks in that case
+	 * USART) as well. We decided on the ones above as they are connected
+	 * to the programming circuitry through jumpers.
 	 */
 	gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
 
@@ -201,9 +203,11 @@ void console_setup(int baud)
 
 
 	/* This then enables the clock to the USART1 peripheral which is
-	 * attached inside the chip to the APB2 bus. Different peripherals
+	 * attached inside the chip to the APB1 bus. Different peripherals
 	 * attach to different buses, and even some UARTS are attached to
 	 * APB1 and some to APB2, again the data sheet is useful here.
+	 * We use the rcc_periph_clock_enable function that knows which
+	 * peripheral is on which bus and sets it up for us.
 	 */
 	rcc_periph_clock_enable(RCC_USART1);
 
@@ -219,57 +223,6 @@ void console_setup(int baud)
 	/* Enable interrupts from the USART */
 	nvic_enable_irq(NVIC_USART1_IRQ);
 
-	/* Specifically enable receive interrupts */
+	/* Specifically enable recieve interrupts */
 	usart_enable_rx_interrupt(CONSOLE_UART);
-}
-
-static ssize_t console_read(void *cookie, char *buf, size_t size)
-{
-	cookie = cookie;        /* -Wunused-parameter */
-	size_t i;
-	for (i = 0; i < size; i++) {
-		char c = console_getc(1);
-		buf[i] = c;
-		if (c == '\r') {
-			buf[i] = '\n';
-			i++;
-			break;
-		}
-	}
-	return i;
-}
-
-static ssize_t console_write(void *cookie, const char *buf, size_t size)
-{
-	cookie = cookie;        /* -Wunused-parameter */
-	size_t i;
-	for (i = 0; i < size; i++) {
-		char c = buf[i];
-		if (c == '\n') {
-			console_putc('\r');
-		}
-		console_putc(c);
-	}
-	return size;
-}
-
-void console_stdio_setup()
-{
-	cookie_io_functions_t console_input_fns = {
-		.read  = console_read,
-		.write = NULL,
-		.seek  = NULL,
-		.close = NULL
-	};
-	cookie_io_functions_t console_output_fns = {
-		.read  = NULL,
-		.write = console_write,
-		.seek  = NULL,
-		.close = NULL
-	};
-	stdin  = fopencookie(NULL, "r", console_input_fns);
-	stdout = fopencookie(NULL, "w", console_output_fns);
-	stderr = fopencookie(NULL, "w", console_output_fns);
-	setlinebuf(stdout);
-	setbuf(stderr, NULL);
 }

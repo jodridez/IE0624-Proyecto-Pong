@@ -9,8 +9,6 @@
 #include <libopencm3/stm32/timer.h>
 #include <libopencm3/cm3/nvic.h>
 
-
-
 /* Configuración de pines GPIO */
 #define TRIG_PORT_LEFT    GPIOB
 #define TRIG_PIN_LEFT     GPIO0
@@ -103,7 +101,7 @@ static void setup_timer_for_sensor(sensor_id_t sensor) {
     }
     
     /* Reset timer */
-    timer_set_counter(timer, 0);
+    timer_set_counter(timer, 0);  // reset the counter to 0
 
     
     /* Configurar timer base: 1 MHz (1 us por tick) */
