@@ -10,6 +10,7 @@
 #ifndef ULTRASONIC_H
 #define ULTRASONIC_H
 
+#include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 

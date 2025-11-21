@@ -10,8 +10,8 @@
 #include <stdio.h>
 
 /* Parámetros del sensor */
-#define MIN_DISTANCE  5   // cm
-#define MAX_DISTANCE  30  // cm
+#define MIN_DISTANCE  1  // cm
+#define MAX_DISTANCE  6  // cm
 
 /* Funciones auxiliares de dibujo */
 static void clear_screen(layer1_pixel *fb, uint16_t color);
@@ -101,26 +101,42 @@ void game_init(Game *game) {
     game->frame_count = 0;
 }
 
-void game_update_player_paddle(Game *game, uint16_t distance) {
-    if (distance != 0xFFFF && distance >= MIN_DISTANCE && distance <= MAX_DISTANCE) {
-        // Mapear distancia a la posición y de la paleta
-        int16_t target_y = ((distance - MIN_DISTANCE) * (LCD_HEIGHT - PADDLE_HEIGHT)) / 
-                           (MAX_DISTANCE - MIN_DISTANCE);
-        
-        // Movimiento suave hacia el objetivo
-        if (target_y < game->player.y) {
-            game->player.y -= PADDLE_SPEED;
-        } else if (target_y > game->player.y) {
-            game->player.y += PADDLE_SPEED;
-        }
-        
-        // Limitar la paleta a la pantalla
-        if (game->player.y < 0) game->player.y = 0;
-        if (game->player.y > LCD_HEIGHT - PADDLE_HEIGHT) {
-            game->player.y = LCD_HEIGHT - PADDLE_HEIGHT;
-        }
+void game_update_player_paddle(Game *game, uint16_t distance)
+{
+    if (distance == 0xFFFF) return;
+
+    if (distance < MIN_DISTANCE) distance = MIN_DISTANCE;
+    if (distance > MAX_DISTANCE) distance = MAX_DISTANCE;
+
+    /* Filtro interno de la distancia (beta pequeño porque ya filtró el driver) */
+    static float dist_filtered = 0.0f;
+    static bool df_initialized = false;
+    const float beta = 0.15f;  /* 0.0 = sin filtro, >0 más suavizado */
+
+    if (!df_initialized) {
+        dist_filtered = (float)distance;
+        df_initialized = true;
+    } else {
+        dist_filtered = dist_filtered * (1.0f - beta) + (float)distance * beta;
     }
+
+    /* Mapear la distancia filtrada */
+    int16_t target_y = (int16_t)(((dist_filtered - MIN_DISTANCE) * 
+                       (LCD_HEIGHT - PADDLE_HEIGHT)) /
+                       (float)(MAX_DISTANCE - MIN_DISTANCE));
+
+    /* Movimiento suavizado hacia target (interpolación exponencial) */
+    const float alpha = 0.45f; /* 0.0 muy suave, 1.0 instantáneo */
+    float new_y = (float)game->player.y * (1.0f - alpha) + (float)target_y * alpha;
+    game->player.y = (int16_t)new_y;
+
+    /* Limitar dentro del área */
+    if (game->player.y < 0) game->player.y = 0;
+    if (game->player.y > LCD_HEIGHT - PADDLE_HEIGHT)
+        game->player.y = LCD_HEIGHT - PADDLE_HEIGHT;
 }
+
+
 
 void game_update(Game *game) {
     game->frame_count++;
