@@ -12,8 +12,15 @@
 #include <libopencm3/stm32/exti.h>
 #include <libopencm3/cm3/nvic.h>
 
+
+
 /* Calibración para 168MHz */
 #define NOP_CYCLES_PER_US 42
+
+#define WINDOW 1
+static uint16_t buf[WINDOW];
+static uint8_t i = 0;
+static uint16_t last = 0;
 
 /* Variable global para la ISR */
 static volatile bool echo_received = false;
@@ -59,16 +66,40 @@ void hcsr05_setup(void) {
     exti_enable_request(EXTI1);
 }
 
+
+
+
+uint16_t median_filter(uint16_t new_val) {
+    buf[i] = new_val;
+    i = (i + 1) % WINDOW;
+
+    uint16_t temp[WINDOW];
+    memcpy(temp, buf, sizeof(temp));
+    // Ordenar
+    for (int a = 0; a < WINDOW; a++)
+        for (int b = a + 1; b < WINDOW; b++)
+            if (temp[b] < temp[a]) {
+                uint16_t t = temp[a];
+                temp[a] = temp[b];
+                temp[b] = t;
+            }
+
+    return temp[WINDOW / 2];
+}
+
+
+
+
 uint16_t hcsr05_read_distance(void) {
     echo_received = false;
-    
+
     /* Enviar pulso trigger de 10us */
     gpio_clear(GPIOB, GPIO0);
     delay_us(2);
     gpio_set(GPIOB, GPIO0);
     delay_us(TRIGGER_TIME);
     gpio_clear(GPIOB, GPIO0);
-    
+
     /* Esperar a que el pin Echo suba */
     uint32_t start_time_ms = mtime();
     while (!gpio_get(GPIOB, GPIO1)) {
@@ -76,28 +107,54 @@ uint16_t hcsr05_read_distance(void) {
             return 0xFFFF; /* Timeout esperando subida */
         }
     }
-    
+
     /* Medir duración del pulso Echo usando polling */
     uint32_t cycles = 0;
     uint32_t max_cycles = 30000 * NOP_CYCLES_PER_US; /* 30ms timeout */
-    
+
     while (gpio_get(GPIOB, GPIO1) && cycles < max_cycles) {
         cycles++;
     }
-    
+
     if (cycles >= max_cycles) {
         return 0xFFFF; /* Timeout */
     }
-    
-    /*
-     * Cálculo de distancia:
-     * - Duración en us = cycles / NOP_CYCLES_PER_US
-     * - Distancia en cm = Duración_us / 58
-     * 
-     * (Velocidad del sonido: 343 m/s → 29.15 us/cm ida → 58 us/cm ida y vuelta)
-     */
+
     uint32_t duration_us = cycles / NOP_CYCLES_PER_US;
     uint32_t distance_cm = duration_us / 58;
-    
+
+    /* --- Validaciones básicas: descartamos lecturas imposibles primero --- */
+    if (distance_cm == 0 || distance_cm > 150) {
+        return 0xFFFF; // distancia inválida
+    }
+    if (distance_cm < 0) {
+        return 0xFFFF; // dead zone
+    }
+
+    /* Inicializar ventana de mediana en la primera lectura válida */
+    static bool window_initialized = false;
+    if (!window_initialized) {
+        for (int k = 0; k < WINDOW; k++) buf[k] = (uint16_t)distance_cm;
+        last = (uint16_t)distance_cm;
+        window_initialized = true;
+    }
+
+    /* 1) Filtrar con mediana (reduce picos) */
+    distance_cm = median_filter((uint16_t)distance_cm);
+
+    /* 2) Anti-glitch: si el salto es demasiado grande, devolver la última estable */
+    int diff = (int)distance_cm - (int)last;
+    if (last != 0 && abs(diff) > 30) {
+        return last;
+    }
+
+    /* Guardar última lectura estable y devolver */
+    last = (uint16_t)distance_cm;
+
+    /* Si querés debug, envolver printf con #ifdef DEBUG */
+    // #ifdef DEBUG
+    // printf("Distancia filt: %u cm\n", (unsigned)distance_cm);
+    // #endif
+
     return (uint16_t)distance_cm;
 }
