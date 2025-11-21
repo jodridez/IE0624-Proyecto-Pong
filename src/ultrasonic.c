@@ -7,16 +7,17 @@
 
 #include "ultrasonic.h"
 #include "clock.h"
-#include <stdlib.h>  // Para abs()
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/exti.h>
 #include <libopencm3/cm3/nvic.h>
 
+
+
 /* Calibración para 168MHz */
 #define NOP_CYCLES_PER_US 42
 
-#define WINDOW 3  // Aumentado a 3 para mejor filtrado de mediana
+#define WINDOW 1
 static uint16_t buf[WINDOW];
 static uint8_t i = 0;
 static uint16_t last = 0;
@@ -65,14 +66,16 @@ void hcsr05_setup(void) {
     exti_enable_request(EXTI1);
 }
 
+
+
+
 uint16_t median_filter(uint16_t new_val) {
     buf[i] = new_val;
     i = (i + 1) % WINDOW;
 
     uint16_t temp[WINDOW];
     memcpy(temp, buf, sizeof(temp));
-    
-    // Ordenar (bubble sort simple)
+    // Ordenar
     for (int a = 0; a < WINDOW; a++)
         for (int b = a + 1; b < WINDOW; b++)
             if (temp[b] < temp[a]) {
@@ -83,6 +86,9 @@ uint16_t median_filter(uint16_t new_val) {
 
     return temp[WINDOW / 2];
 }
+
+
+
 
 uint16_t hcsr05_read_distance(void) {
     echo_received = false;
@@ -117,9 +123,12 @@ uint16_t hcsr05_read_distance(void) {
     uint32_t duration_us = cycles / NOP_CYCLES_PER_US;
     uint32_t distance_cm = duration_us / 58;
 
-    /* --- Validaciones básicas --- */
+    /* --- Validaciones básicas: descartamos lecturas imposibles primero --- */
     if (distance_cm == 0 || distance_cm > 150) {
         return 0xFFFF; // distancia inválida
+    }
+    if (distance_cm < 0) {
+        return 0xFFFF; // dead zone
     }
 
     /* Inicializar ventana de mediana en la primera lectura válida */
@@ -135,12 +144,17 @@ uint16_t hcsr05_read_distance(void) {
 
     /* 2) Anti-glitch: si el salto es demasiado grande, devolver la última estable */
     int diff = (int)distance_cm - (int)last;
-    if (last != 0 && abs(diff) > 15) {  // Umbral reducido de 30 a 15 cm
+    if (last != 0 && abs(diff) > 30) {
         return last;
     }
 
     /* Guardar última lectura estable y devolver */
     last = (uint16_t)distance_cm;
+
+    /* Si querés debug, envolver printf con #ifdef DEBUG */
+    // #ifdef DEBUG
+    // printf("Distancia filt: %u cm\n", (unsigned)distance_cm);
+    // #endif
 
     return (uint16_t)distance_cm;
 }

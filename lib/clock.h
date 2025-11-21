@@ -13,6 +13,5 @@ void milli_sleep(uint32_t);
 uint32_t mtime(void);
 void clock_setup(void);
 
-
 #endif /* generic header protector */
 
