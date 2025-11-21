@@ -9,9 +9,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Parámetros del sensor */
-#define MIN_DISTANCE  1  // cm
-#define MAX_DISTANCE  6  // cm
+/* Parámetros del sensor - AJUSTAR SEGÚN TU HARDWARE */
+#define MIN_DISTANCE  5   // cm - distancia mínima de operación
+#define MAX_DISTANCE  30  // cm - distancia máxima de operación
 
 /* Funciones auxiliares de dibujo */
 static void clear_screen(layer1_pixel *fb, uint16_t color);
@@ -21,6 +21,14 @@ static void draw_char(layer1_pixel *fb, int16_t x, int16_t y,
                      char c, uint16_t color);
 static void draw_number(layer1_pixel *fb, int16_t x, int16_t y, 
                        uint8_t num, uint16_t color);
+static void draw_string(layer1_pixel *fb, int16_t x, int16_t y, 
+                       const char *str, uint16_t color);
+
+static void transform_coords(int16_t *x, int16_t *y) {
+    *x = LCD_WIDTH - 1 - *x;
+    *y = LCD_HEIGHT - 1 - *y;
+}
+
 
 /* Font 5x7 simple */
 static const uint8_t font_5x7[][5] = {
@@ -34,6 +42,25 @@ static const uint8_t font_5x7[][5] = {
     {0x60, 0x47, 0x48, 0x50, 0x60}, // 7
     {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
     {0x32, 0x49, 0x49, 0x49, 0x3E}, // 9
+};
+
+/* Letras adicionales para "GAME OVER" y "WIN" */
+static const uint8_t font_letters[][5] = {
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // E
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
+    {0x7F, 0x48, 0x48, 0x48, 0x7F}, // A
+    {0x41, 0x7F, 0x49, 0x49, 0x41}, // Y
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // U
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // S
+    {0x7F, 0x40, 0x7C, 0x40, 0x7F}, // W
+    {0x7F, 0x01, 0x01, 0x01, 0x7F}, // I
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // N
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // G
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // M
+    {0x7F, 0x40, 0x40, 0x40, 0x7F}, // V
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // R
 };
 
 /* Implementación de funciones de dibujo */
@@ -62,7 +89,8 @@ static void draw_char(layer1_pixel *fb, int16_t x, int16_t y,
         int idx = c - '0';
         for (int i = 0; i < 5; i++) {
             for (int j = 0; j < 8; j++) {
-                if (font_5x7[idx][i] & (1 << j)) {
+                // CORREGIDO: invertir el orden de los bits
+                if (font_5x7[idx][i] & (1 << (7 - j))) {
                     int16_t px = x + i * 2;
                     int16_t py = y + j * 2;
                     draw_filled_rect(fb, px, py, 2, 2, color);
@@ -79,6 +107,49 @@ static void draw_number(layer1_pixel *fb, int16_t x, int16_t y,
     int16_t cx = x;
     for (char *p = buffer; *p; p++) {
         draw_char(fb, cx, y, *p, color);
+        cx += 12;
+    }
+}
+
+static void draw_letter(layer1_pixel *fb, int16_t x, int16_t y, 
+                       char c, uint16_t color) {
+    int idx = -1;
+    switch(c) {
+        case 'P': idx = 0; break;
+        case 'E': idx = 1; break;
+        case 'L': idx = 2; break;
+        case 'A': idx = 3; break;
+        case 'Y': idx = 4; break;
+        case 'U': idx = 5; break;
+        case 'O': idx = 6; break;
+        case 'S': idx = 7; break;
+        case 'W': idx = 8; break;
+        case 'I': idx = 9; break;
+        case 'N': idx = 10; break;
+        case 'G': idx = 11; break;
+        case 'M': idx = 12; break;
+        case 'V': idx = 13; break;
+        case 'R': idx = 14; break;
+        case ' ': return; // Espacio
+        default: return;
+    }
+    
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 8; j++) {
+            if (font_letters[idx][i] & (1 << (7 - j))) {
+                int16_t px = x + i * 2;
+                int16_t py = y + j * 2;
+                draw_filled_rect(fb, px, py, 2, 2, color);
+            }
+        }
+    }
+}
+
+static void draw_string(layer1_pixel *fb, int16_t x, int16_t y, 
+                       const char *str, uint16_t color) {
+    int16_t cx = x;
+    for (const char *p = str; *p; p++) {
+        draw_letter(fb, cx, y, *p, color);
         cx += 12;
     }
 }
@@ -105,38 +176,35 @@ void game_update_player_paddle(Game *game, uint16_t distance)
 {
     if (distance == 0xFFFF) return;
 
+    // Limitar a rango válido
     if (distance < MIN_DISTANCE) distance = MIN_DISTANCE;
     if (distance > MAX_DISTANCE) distance = MAX_DISTANCE;
 
-    /* Filtro interno de la distancia (beta pequeño porque ya filtró el driver) */
-    static float dist_filtered = 0.0f;
-    static bool df_initialized = false;
-    const float beta = 0.15f;  /* 0.0 = sin filtro, >0 más suavizado */
-
-    if (!df_initialized) {
-        dist_filtered = (float)distance;
-        df_initialized = true;
-    } else {
-        dist_filtered = dist_filtered * (1.0f - beta) + (float)distance * beta;
+    // SIMPLIFICADO: Un solo filtro exponencial suave
+    static float paddle_y_filtered = 160.0f;  // Centro de pantalla
+    static bool initialized = false;
+    
+    if (!initialized) {
+        paddle_y_filtered = (float)(LCD_HEIGHT / 2 - PADDLE_HEIGHT / 2);
+        initialized = true;
     }
 
-    /* Mapear la distancia filtrada */
-    int16_t target_y = (int16_t)(((dist_filtered - MIN_DISTANCE) * 
-                       (LCD_HEIGHT - PADDLE_HEIGHT)) /
-                       (float)(MAX_DISTANCE - MIN_DISTANCE));
+    // Mapear distancia a posición Y (invertir si es necesario)
+    float target_y = ((float)(distance - MIN_DISTANCE) * 
+                     (LCD_HEIGHT - PADDLE_HEIGHT)) /
+                     (float)(MAX_DISTANCE - MIN_DISTANCE);
 
-    /* Movimiento suavizado hacia target (interpolación exponencial) */
-    const float alpha = 0.45f; /* 0.0 muy suave, 1.0 instantáneo */
-    float new_y = (float)game->player.y * (1.0f - alpha) + (float)target_y * alpha;
-    game->player.y = (int16_t)new_y;
+    // Filtro exponencial único con alpha más alto para respuesta rápida
+    const float alpha = 0.3f;  // Mayor = más rápido, menor = más suave
+    paddle_y_filtered = paddle_y_filtered * (1.0f - alpha) + target_y * alpha;
 
-    /* Limitar dentro del área */
+    game->player.y = (int16_t)paddle_y_filtered;
+
+    // Limitar dentro del área
     if (game->player.y < 0) game->player.y = 0;
     if (game->player.y > LCD_HEIGHT - PADDLE_HEIGHT)
         game->player.y = LCD_HEIGHT - PADDLE_HEIGHT;
 }
-
-
 
 void game_update(Game *game) {
     game->frame_count++;
@@ -234,8 +302,18 @@ void game_render(const Game *game, layer1_pixel *framebuffer) {
     
     /* Mensaje de fin de juego */
     if (game->game_over) {
-        draw_filled_rect(framebuffer, LCD_WIDTH / 2 - 50, 
-                        LCD_HEIGHT / 2 - 20, 100, 40, COLOR_BLUE);
+        // Fondo azul
+        draw_filled_rect(framebuffer, LCD_WIDTH / 2 - 80, 
+                        LCD_HEIGHT / 2 - 30, 160, 60, COLOR_BLUE);
+        
+        // Determinar ganador y mostrar mensaje
+        if (game->player.score >= WINNING_SCORE) {
+            draw_string(framebuffer, LCD_WIDTH / 2 - 50, 
+                       LCD_HEIGHT / 2 - 20, "YOU WIN", COLOR_YELLOW);
+        } else {
+            draw_string(framebuffer, LCD_WIDTH / 2 - 60, 
+                       LCD_HEIGHT / 2 - 20, "GAME OVER", COLOR_RED);
+        }
     }
 }
 

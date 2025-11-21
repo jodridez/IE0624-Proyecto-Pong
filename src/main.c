@@ -226,6 +226,17 @@ int main(void) {
         /* Leer sensor cada 3 frames (~23 veces/segundo) */
         if (game.frame_count % 3 == 0) {
             uint16_t distance = hcsr05_read_distance();
+
+                // DEBUG: Imprimir cada segundo aproximadamente
+            if (game.frame_count % 70 == 0) {
+                if (distance != 0xFFFF) {
+                    printf("Distancia: %u cm, Paleta Y: %d\n", 
+                    distance, game.player.y);
+                } else {
+                    printf("Error de lectura\n");
+                }
+            }
+
             game_update_player_paddle(&game, distance);
         }
         
