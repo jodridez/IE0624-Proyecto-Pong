@@ -1,254 +1,263 @@
 /**
  * @file main.c
- * @brief Programa principal - Juego Pong con sensor ultrasónico
+ * @brief Programa principal del juego Pong
  * 
- * Hardware:
- * - STM32F429I-DISC1
- * - HC-SR05: Trigger=PB0, Echo=PB1
- * - Botón Usuario: PA0
+ * Integra todos los módulos: sensores ultrasónicos,
+ * gráficos LCD y lógica del juego.
  * 
  * IE0624 - Laboratorio de Microcontroladores
- * Universidad de Costa Rica
+ * Proyecto: Pong con control ultrasónico STM32F429I-DISC1
  */
 
-#include <stdio.h>
-#include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
-#include <libopencm3/stm32/ltdc.h>
+#include <libopencm3/cm3/nvic.h>
 
 #include "clock.h"
-#include "console.h"
-#include "sdram.h"
-#include "lcd-spi.h"
 #include "ultrasonic.h"
+#include "lcd_graphics.h"
 #include "game_logic.h"
 
-/* Configuración del LCD LTDC */
-#define REFRESH_RATE 70 /* Hz */
-#define HSYNC       10
-#define HBP         20
-#define HFP         10
-#define VSYNC        2
-#define VBP          2
-#define VFP          4
+/* Variables globales */
+static game_t game;
+static volatile uint32_t sensor_update_flag = false;
 
-/* Framebuffer en SDRAM */
-layer1_pixel *const lcd_frame_buffer = (void *)SDRAM_BASE_ADDRESS;
-#define LCD_LAYER1_PIXFORMAT LTDC_LxPFCR_RGB565
-#define LCD_PIXEL_SIZE (sizeof(layer1_pixel))
+/* Configuración del sistema */
+#define TARGET_FPS 30
+#define FRAME_TIME_MS (1000 / TARGET_FPS)
+#define SENSOR_UPDATE_INTERVAL_MS 50
 
-/* Estado global del juego */
-static Game game;
+/* Variable externa de mtime */
+static uint32_t last_sensor_update = 0;
 
 /**
- * @brief Inicializa el controlador LCD con LTDC
+ * @brief Configura el reloj del sistema a 168 MHz
  */
-static void lcd_ltdc_init(void) {
-    /* Habilitar clocks para GPIO del LCD */
-    rcc_periph_clock_enable(RCC_GPIOA | RCC_GPIOB | RCC_GPIOC |
-                RCC_GPIOD | RCC_GPIOF | RCC_GPIOG);
-
-    /* Configurar pines GPIO como AF14 (LTDC) */
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE,
-            GPIO3 | GPIO4 | GPIO6 | GPIO11 | GPIO12);
-    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
-                GPIO3 | GPIO4 | GPIO6 | GPIO11 | GPIO12);
-    gpio_set_af(GPIOA, GPIO_AF14, GPIO3 | GPIO4 | GPIO6 | GPIO11 | GPIO12);
-
-    gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE,
-            GPIO8 | GPIO9 | GPIO10 | GPIO11);
-    gpio_set_output_options(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
-                GPIO8 | GPIO9 | GPIO10 | GPIO11);
-    gpio_set_af(GPIOB, GPIO_AF14, GPIO8 | GPIO9 | GPIO10 | GPIO11);
-
-    gpio_mode_setup(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE,
-            GPIO6 | GPIO7 | GPIO10);
-    gpio_set_output_options(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
-                GPIO6 | GPIO7 | GPIO10);
-    gpio_set_af(GPIOC, GPIO_AF14, GPIO6 | GPIO7 | GPIO10);
-
-    gpio_mode_setup(GPIOD, GPIO_MODE_AF, GPIO_PUPD_NONE,
-            GPIO3 | GPIO6);
-    gpio_set_output_options(GPIOD, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
-                GPIO3 | GPIO6);
-    gpio_set_af(GPIOD, GPIO_AF14, GPIO3 | GPIO6);
-
-    gpio_mode_setup(GPIOF, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO10);
-    gpio_set_output_options(GPIOF, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO10);
-    gpio_set_af(GPIOF, GPIO_AF14, GPIO10);
-
-    gpio_mode_setup(GPIOG, GPIO_MODE_AF, GPIO_PUPD_NONE,
-            GPIO6 | GPIO7 | GPIO10 | GPIO11 | GPIO12);
-    gpio_set_output_options(GPIOG, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
-                GPIO6 | GPIO7 | GPIO10 | GPIO11 | GPIO12);
-    gpio_set_af(GPIOG, GPIO_AF9, GPIO10 | GPIO12);
-    gpio_set_af(GPIOG, GPIO_AF14, GPIO6 | GPIO7 | GPIO11);
-
-    /* Configurar PLL SAI para el clock del LCD */
-    uint32_t sain = 192;
-    uint32_t saiq = (RCC_PLLSAICFGR >> RCC_PLLSAICFGR_PLLSAIQ_SHIFT) &
-            RCC_PLLSAICFGR_PLLSAIQ_MASK;
-    uint32_t sair = 4;
-    RCC_PLLSAICFGR = (sain << RCC_PLLSAICFGR_PLLSAIN_SHIFT |
-              saiq << RCC_PLLSAICFGR_PLLSAIQ_SHIFT |
-              sair << RCC_PLLSAICFGR_PLLSAIR_SHIFT);
-    RCC_DCKCFGR |= RCC_DCKCFGR_PLLSAIDIVR_DIVR_8 << RCC_DCKCFGR_PLLSAIDIVR_SHIFT;
-    RCC_CR |= RCC_CR_PLLSAION;
-    while ((RCC_CR & RCC_CR_PLLSAIRDY) == 0);
-    
-    /* Habilitar clock del LTDC */
-    RCC_APB2ENR |= RCC_APB2ENR_LTDCEN;
-
-    /* Configurar timings del LCD */
-    LTDC_SSCR = (HSYNC - 1) << LTDC_SSCR_HSW_SHIFT |
-                (VSYNC - 1) << LTDC_SSCR_VSH_SHIFT;
-    LTDC_BPCR = (HSYNC + HBP - 1) << LTDC_BPCR_AHBP_SHIFT |
-                (VSYNC + VBP - 1) << LTDC_BPCR_AVBP_SHIFT;
-    LTDC_AWCR = (HSYNC + HBP + LCD_WIDTH - 1) << LTDC_AWCR_AAW_SHIFT |
-                (VSYNC + VBP + LCD_HEIGHT - 1) << LTDC_AWCR_AAH_SHIFT;
-    LTDC_TWCR = (HSYNC + HBP + LCD_WIDTH + HFP - 1) << LTDC_TWCR_TOTALW_SHIFT |
-                (VSYNC + VBP + LCD_HEIGHT + VFP - 1) << LTDC_TWCR_TOTALH_SHIFT;
-
-    LTDC_GCR |= LTDC_GCR_PCPOL_ACTIVE_HIGH;
-    LTDC_BCCR = 0x00000000; /* Color de fondo negro */
-
-    /* Configurar interrupciones del LTDC */
-    LTDC_IER = LTDC_IER_RRIE;
-    nvic_enable_irq(NVIC_LCD_TFT_IRQ);
-
-    /* Configurar Layer 1 (única capa) */
-    uint32_t h_start = HSYNC + HBP + 0;
-    uint32_t h_stop = HSYNC + HBP + LCD_WIDTH - 1;
-    LTDC_L1WHPCR = h_stop << LTDC_LxWHPCR_WHSPPOS_SHIFT |
-                   h_start << LTDC_LxWHPCR_WHSTPOS_SHIFT;
-    
-    uint32_t v_start = VSYNC + VBP + 0;
-    uint32_t v_stop = VSYNC + VBP + LCD_HEIGHT - 1;
-    LTDC_L1WVPCR = v_stop << LTDC_LxWVPCR_WVSPPOS_SHIFT |
-                   v_start << LTDC_LxWVPCR_WVSTPOS_SHIFT;
-
-    LTDC_L1PFCR = LCD_LAYER1_PIXFORMAT;
-    LTDC_L1CFBAR = (uint32_t)lcd_frame_buffer;
-
-    uint32_t pitch = LCD_WIDTH * LCD_PIXEL_SIZE;
-    uint32_t length = LCD_WIDTH * LCD_PIXEL_SIZE + 3;
-    LTDC_L1CFBLR = pitch << LTDC_LxCFBLR_CFBP_SHIFT |
-                   length << LTDC_LxCFBLR_CFBLL_SHIFT;
-
-    LTDC_L1CFBLNR = LCD_HEIGHT;
-    LTDC_L1CACR = 0x000000FF;
-    LTDC_L1BFCR = LTDC_LxBFCR_BF1_PIXEL_ALPHA_x_CONST_ALPHA |
-                  LTDC_LxBFCR_BF2_PIXEL_ALPHA_x_CONST_ALPHA;
-
-    /* Habilitar layer y LTDC */
-    LTDC_L1CR |= LTDC_LxCR_LAYER_ENABLE;
-    LTDC_SRCR |= LTDC_SRCR_VBR;
-    LTDC_GCR |= LTDC_GCR_LTDC_ENABLE;
+static void clock_setup_local(void) {
+    /* Usar la función de clock.c */
+    clock_setup();
 }
 
 /**
- * @brief ISR del LCD - Se llama en cada frame (70Hz)
+ * @brief Obtiene el tiempo actual en ms
  */
-void lcd_tft_isr(void) {
-    LTDC_ICR |= LTDC_ICR_CRRIF;
-    
-    /* Actualizar juego si está activo */
-    if (game_is_active(&game)) {
-        game_update(&game);
-    }
-    
-    /* Renderizar siempre */
-    game_render(&game, lcd_frame_buffer);
-    
-    /* Recargar configuración de shadow */
-    LTDC_SRCR |= LTDC_SRCR_VBR;
+static uint32_t get_time_ms(void) {
+    return mtime();
 }
 
 /**
- * @brief Configura botón de usuario
+ * @brief Delay en milisegundos
+ */
+void delay_ms(uint32_t ms) {
+    uint32_t start = get_time_ms();
+    while ((get_time_ms() - start) < ms);
+}
+
+void delay_us(uint32_t us) {
+    uint32_t start = get_time_ms();
+    while ((get_time_ms() - start) < (us / 1000)); // Aproximación
+}
+
+
+
+/**
+ * @brief Configura botón de usuario para start/reset
  */
 static void button_setup(void) {
+    /* Botón de usuario en PA0 del STM32F429-Discovery */
     rcc_periph_clock_enable(RCC_GPIOA);
     gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO0);
 }
 
 /**
- * @brief Lee el botón con debounce
+ * @brief Lee el estado del botón
+ * @return true si está presionado
  */
-static bool button_pressed(void) {
-    if (gpio_get(GPIOA, GPIO0)) {
-        milli_sleep(50);
-        if (gpio_get(GPIOA, GPIO0)) {
-            while (gpio_get(GPIOA, GPIO0)); /* Esperar release */
-            return true;
-        }
+static bool button_is_pressed(void) {
+    return gpio_get(GPIOA, GPIO0) != 0;
+}
+
+/**
+ * @brief Actualiza las posiciones de las paletas desde los sensores
+ */
+static void update_paddles_from_sensors(void) {
+    uint32_t current_time = get_time_ms();
+    
+    /* Solo actualizar cada SENSOR_UPDATE_INTERVAL_MS */
+    if (current_time - last_sensor_update < SENSOR_UPDATE_INTERVAL_MS) {
+        return;
     }
-    return false;
+    
+    last_sensor_update = current_time;
+    
+    /* Leer sensores */
+    ultrasonic_trigger(SENSOR_LEFT);
+    delay_ms(5);  /* Pequeño delay entre triggers */
+    ultrasonic_trigger(SENSOR_RIGHT);
+    
+    /* Esperar mediciones (timeout) */
+    uint32_t timeout = 100;
+    uint32_t start = get_time_ms();
+    while ((!ultrasonic_is_ready(SENSOR_LEFT) || 
+            !ultrasonic_is_ready(SENSOR_RIGHT)) &&
+           (get_time_ms() - start < timeout)) {
+        __asm__("nop");
+    }
+    
+    /* Actualizar paletas si hay mediciones válidas */
+    if (ultrasonic_is_ready(SENSOR_LEFT)) {
+        uint32_t pos = ultrasonic_map_to_position(SENSOR_LEFT, 0, 
+                                                   GAME_HEIGHT - PADDLE_HEIGHT);
+        game_update_paddle(&game, &game.paddle_left, pos);
+    }
+    
+    if (ultrasonic_is_ready(SENSOR_RIGHT)) {
+        uint32_t pos = ultrasonic_map_to_position(SENSOR_RIGHT, 0,
+                                                   GAME_HEIGHT - PADDLE_HEIGHT);
+        game_update_paddle(&game, &game.paddle_right, pos);
+    }
+}
+
+/**
+ * @brief Muestra pantalla de bienvenida
+ */
+static void show_welcome_screen(void) {
+    lcd_clear(COLOR_BLACK);
+    
+    /* Título */
+    lcd_draw_string(70, 100, "PONG GAME", COLOR_WHITE, COLOR_BLACK);
+    
+    /* Instrucciones */
+    lcd_draw_string(30, 140, "Use your hands", COLOR_YELLOW, COLOR_BLACK);
+    lcd_draw_string(30, 155, "near sensors", COLOR_YELLOW, COLOR_BLACK);
+    
+    /* Info */
+    lcd_draw_string(20, 200, "Press button to start", COLOR_GREEN, COLOR_BLACK);
+    
+    lcd_draw_string(30, 280, "IE0624 - UCR", COLOR_GRAY, COLOR_BLACK);
+    lcd_draw_string(40, 295, "STM32F429I", COLOR_GRAY, COLOR_BLACK);
+    
+    delay_ms(2000);
+}
+
+/**
+ * @brief Calibración inicial de sensores
+ */
+static void calibrate_sensors(void) {
+    lcd_clear(COLOR_BLACK);
+    lcd_draw_string(50, 140, "Calibrating...", COLOR_YELLOW, COLOR_BLACK);
+    lcd_draw_string(20, 160, "Place hands at center", COLOR_WHITE, COLOR_BLACK);
+    
+    delay_ms(1000);
+    
+    ultrasonic_calibrate();
+    
+    lcd_draw_string(60, 200, "Ready!", COLOR_GREEN, COLOR_BLACK);
+    delay_ms(1000);
+}
+
+/**
+ * @brief Bucle principal del juego
+ */
+static void game_loop(void) {
+    uint32_t last_frame_time = get_time_ms();
+    uint32_t frame_count = 0;
+    bool button_pressed_last = false;
+    
+    while (1) {
+        uint32_t current_time = get_time_ms();
+        uint32_t elapsed = current_time - last_frame_time;
+        
+        /* Mantener frame rate objetivo */
+        if (elapsed < FRAME_TIME_MS) {
+            continue;
+        }
+        
+        last_frame_time = current_time;
+        frame_count++;
+        
+        /* Actualizar sensores periódicamente */
+        if (game_is_playing(&game) || 
+            game_get_state(&game) == GAME_STATE_COUNTDOWN) {
+            update_paddles_from_sensors();
+        }
+        
+        /* Detectar presión de botón (con debounce) */
+        bool button_pressed = button_is_pressed();
+        if (button_pressed && !button_pressed_last) {
+            game_state_t state = game_get_state(&game);
+            
+            if (state == GAME_STATE_READY) {
+                game_start(&game);
+            } else if (state == GAME_STATE_GAME_OVER) {
+                game_reset(&game);
+            } else if (state == GAME_STATE_PLAYING || 
+                       state == GAME_STATE_PAUSED) {
+                game_toggle_pause(&game);
+            }
+        }
+        button_pressed_last = button_pressed;
+        
+        /* Actualizar lógica del juego */
+        game_update_state(&game);
+        
+        /* Renderizar */
+        game_render(&game);
+        
+        /* Debug: mostrar FPS cada segundo (opcional) */
+        #ifdef DEBUG_FPS
+        if (frame_count % TARGET_FPS == 0) {
+            char fps_str[20];
+            uint32_t fps = (frame_count * 1000) / current_time;
+            lcd_draw_string(5, 5, "FPS:", COLOR_RED, COLOR_BLACK);
+            lcd_draw_number(35, 5, fps, COLOR_RED, COLOR_BLACK);
+        }
+        #endif
+    }
 }
 
 /**
  * @brief Función principal
  */
 int main(void) {
-    /* Inicializar reloj del sistema (168MHz con SysTick) */
-    clock_setup();
-    
-    /* Inicializar consola UART para debug */
-    console_setup(115200);
-    console_stdio_setup();
-    printf("Pong Game - STM32F429I-DISC1\n");
-    
-    /* Inicializar botón de usuario */
+    /* Configuración del sistema */
+    clock_setup_local();
     button_setup();
     
-    /* Inicializar SDRAM para framebuffer */
-    printf("Initializing SDRAM...\n");
-    sdram_init();
+    /* Inicializar subsistemas */
+    lcd_init();
+    ultrasonic_init();
     
-    /* Inicializar sensor ultrasónico */
-    printf("Initializing HC-SR05 sensor...\n");
-    hcsr05_setup();
+    /* Pantalla de bienvenida */
+    show_welcome_screen();
     
-    /* Inicializar LCD con LTDC */
-    printf("Initializing LCD (LTDC)...\n");
-    lcd_ltdc_init();
-    lcd_spi_init(); /* Para inicialización del chip ILI9341 */
+    /* Calibración de sensores */
+    calibrate_sensors();
     
     /* Inicializar juego */
-    printf("Starting game...\n");
     game_init(&game);
     
-    printf("Game running! Use button to reset.\n");
+    /* Preparar para iniciar */
+    lcd_clear(COLOR_BLACK);
+    game.state = GAME_STATE_READY;
     
-    /* Loop principal */
-    while (1) {
-        /* Leer sensor cada 3 frames (~23 veces/segundo) */
-        if (game.frame_count % 3 == 0) {
-            uint16_t distance = hcsr05_read_distance();
-
-                // DEBUG: Imprimir cada segundo aproximadamente
-            if (game.frame_count % 70 == 0) {
-                if (distance != 0xFFFF) {
-                    printf("Distancia: %u cm, Paleta Y: %d\n", 
-                    distance, game.player.y);
-                } else {
-                    printf("Error de lectura\n");
-                }
-            }
-
-            game_update_player_paddle(&game, distance);
-        }
-        
-        /* Reiniciar juego con botón */
-        if (button_pressed()) {
-            game_reset(&game);
-            printf("Game reset!\n");
-        }
-        
-        /* Pequeño delay para no saturar el loop */
-        milli_sleep(1);
+    /* Mensaje inicial */
+    lcd_draw_string(40, 150, "Press button", COLOR_WHITE, COLOR_BLACK);
+    lcd_draw_string(50, 165, "to start!", COLOR_WHITE, COLOR_BLACK);
+    lcd_update();
+    
+    /* Esperar botón para comenzar */
+    while (!button_is_pressed()) {
+        delay_ms(10);
     }
+    delay_ms(200);  /* Debounce */
     
+    /* Iniciar juego */
+    game_start(&game);
+    
+    /* Bucle principal */
+    game_loop();
+    
+    /* Nunca debería llegar aquí */
     return 0;
 }

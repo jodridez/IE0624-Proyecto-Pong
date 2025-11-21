@@ -1,330 +1,375 @@
 /**
  * @file game_logic.c
  * @brief Implementación de la lógica del juego Pong
- * 
- * Basado en código funcional con LTDC
  */
 
 #include "game_logic.h"
 #include <stdlib.h>
-#include <stdio.h>
+#include <string.h>
 
-/* Parámetros del sensor - AJUSTAR SEGÚN TU HARDWARE */
-#define MIN_DISTANCE  5   // cm - distancia mínima de operación
-#define MAX_DISTANCE  30  // cm - distancia máxima de operación
+/* Forward declaration for internal pixel drawing */
+extern void lcd_draw_pixel(int x, int y, uint16_t color);
 
-/* Funciones auxiliares de dibujo */
-static void clear_screen(layer1_pixel *fb, uint16_t color);
-static void draw_filled_rect(layer1_pixel *fb, int16_t x, int16_t y, 
-                             int16_t w, int16_t h, uint16_t color);
-static void draw_char(layer1_pixel *fb, int16_t x, int16_t y, 
-                     char c, uint16_t color);
-static void draw_number(layer1_pixel *fb, int16_t x, int16_t y, 
-                       uint8_t num, uint16_t color);
-static void draw_string(layer1_pixel *fb, int16_t x, int16_t y, 
-                       const char *str, uint16_t color);
+/* Estado anterior de la pelota (para borrado eficiente) */
+static ball_t prev_ball;
+static paddle_t prev_paddle_left;
+static paddle_t prev_paddle_right;
 
-static void transform_coords(int16_t *x, int16_t *y) {
-    *x = LCD_WIDTH - 1 - *x;
-    *y = LCD_HEIGHT - 1 - *y;
-}
-
-
-/* Font 5x7 simple */
-static const uint8_t font_5x7[][5] = {
-    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 0
-    {0x00, 0x21, 0x7F, 0x01, 0x00}, // 1
-    {0x27, 0x45, 0x45, 0x45, 0x39}, // 2
-    {0x22, 0x49, 0x49, 0x49, 0x36}, // 3
-    {0x0C, 0x14, 0x24, 0x7F, 0x04}, // 4
-    {0x72, 0x51, 0x51, 0x51, 0x4E}, // 5
-    {0x3E, 0x49, 0x49, 0x49, 0x26}, // 6
-    {0x60, 0x47, 0x48, 0x50, 0x60}, // 7
-    {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
-    {0x32, 0x49, 0x49, 0x49, 0x3E}, // 9
-};
-
-/* Letras adicionales para "GAME OVER" y "WIN" */
-static const uint8_t font_letters[][5] = {
-    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
-    {0x7F, 0x49, 0x49, 0x49, 0x36}, // E
-    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
-    {0x7F, 0x48, 0x48, 0x48, 0x7F}, // A
-    {0x41, 0x7F, 0x49, 0x49, 0x41}, // Y
-    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // U
-    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
-    {0x7F, 0x49, 0x49, 0x49, 0x36}, // S
-    {0x7F, 0x40, 0x7C, 0x40, 0x7F}, // W
-    {0x7F, 0x01, 0x01, 0x01, 0x7F}, // I
-    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // N
-    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // G
-    {0x7F, 0x49, 0x49, 0x49, 0x41}, // M
-    {0x7F, 0x40, 0x40, 0x40, 0x7F}, // V
-    {0x7F, 0x49, 0x49, 0x49, 0x41}, // R
-};
-
-/* Implementación de funciones de dibujo */
-static void clear_screen(layer1_pixel *fb, uint16_t color) {
-    for (int i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
-        fb[i] = color;
-    }
-}
-
-static void draw_filled_rect(layer1_pixel *fb, int16_t x, int16_t y, 
-                             int16_t w, int16_t h, uint16_t color) {
-    for (int16_t j = 0; j < h; j++) {
-        for (int16_t i = 0; i < w; i++) {
-            int16_t px = x + i;
-            int16_t py = y + j;
-            if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
-                fb[py * LCD_WIDTH + px] = color;
-            }
-        }
-    }
-}
-
-static void draw_char(layer1_pixel *fb, int16_t x, int16_t y, 
-                     char c, uint16_t color) {
-    if (c >= '0' && c <= '9') {
-        int idx = c - '0';
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 8; j++) {
-                // CORREGIDO: invertir el orden de los bits
-                if (font_5x7[idx][i] & (1 << (7 - j))) {
-                    int16_t px = x + i * 2;
-                    int16_t py = y + j * 2;
-                    draw_filled_rect(fb, px, py, 2, 2, color);
-                }
-            }
-        }
-    }
-}
-
-static void draw_number(layer1_pixel *fb, int16_t x, int16_t y, 
-                       uint8_t num, uint16_t color) {
-    char buffer[4];
-    snprintf(buffer, sizeof(buffer), "%d", num);
-    int16_t cx = x;
-    for (char *p = buffer; *p; p++) {
-        draw_char(fb, cx, y, *p, color);
-        cx += 12;
-    }
-}
-
-static void draw_letter(layer1_pixel *fb, int16_t x, int16_t y, 
-                       char c, uint16_t color) {
-    int idx = -1;
-    switch(c) {
-        case 'P': idx = 0; break;
-        case 'E': idx = 1; break;
-        case 'L': idx = 2; break;
-        case 'A': idx = 3; break;
-        case 'Y': idx = 4; break;
-        case 'U': idx = 5; break;
-        case 'O': idx = 6; break;
-        case 'S': idx = 7; break;
-        case 'W': idx = 8; break;
-        case 'I': idx = 9; break;
-        case 'N': idx = 10; break;
-        case 'G': idx = 11; break;
-        case 'M': idx = 12; break;
-        case 'V': idx = 13; break;
-        case 'R': idx = 14; break;
-        case ' ': return; // Espacio
-        default: return;
-    }
+void game_init(game_t *game) {
+    memset(game, 0, sizeof(game_t));
     
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 8; j++) {
-            if (font_letters[idx][i] & (1 << (7 - j))) {
-                int16_t px = x + i * 2;
-                int16_t py = y + j * 2;
-                draw_filled_rect(fb, px, py, 2, 2, color);
-            }
-        }
-    }
-}
-
-static void draw_string(layer1_pixel *fb, int16_t x, int16_t y, 
-                       const char *str, uint16_t color) {
-    int16_t cx = x;
-    for (const char *p = str; *p; p++) {
-        draw_letter(fb, cx, y, *p, color);
-        cx += 12;
-    }
-}
-
-/* Implementación de funciones públicas */
-void game_init(Game *game) {
-    game->ball.x = LCD_WIDTH / 2;
-    game->ball.y = LCD_HEIGHT / 2;
+    /* Inicializar paleta izquierda */
+    game->paddle_left.x = PADDLE_MARGIN;
+    game->paddle_left.y = (GAME_HEIGHT - PADDLE_HEIGHT) / 2;
+    game->paddle_left.width = PADDLE_WIDTH;
+    game->paddle_left.height = PADDLE_HEIGHT;
+    game->paddle_left.color = COLOR_GREEN;
+    game->paddle_left.score = 0;
+    
+    /* Inicializar paleta derecha */
+    game->paddle_right.x = GAME_WIDTH - PADDLE_MARGIN - PADDLE_WIDTH;
+    game->paddle_right.y = (GAME_HEIGHT - PADDLE_HEIGHT) / 2;
+    game->paddle_right.width = PADDLE_WIDTH;
+    game->paddle_right.height = PADDLE_HEIGHT;
+    game->paddle_right.color = COLOR_CYAN;
+    game->paddle_right.score = 0;
+    
+    /* Inicializar pelota */
+    game->ball.x = GAME_WIDTH / 2;
+    game->ball.y = GAME_HEIGHT / 2;
     game->ball.vx = BALL_SPEED_X;
     game->ball.vy = BALL_SPEED_Y;
+    game->ball.size = BALL_SIZE;
+    game->ball.color = COLOR_WHITE;
     
-    game->player.y = LCD_HEIGHT / 2 - PADDLE_HEIGHT / 2;
-    game->player.score = 0;
-    
-    game->cpu.y = LCD_HEIGHT / 2 - PADDLE_HEIGHT / 2;
-    game->cpu.score = 0;
-    
-    game->running = true;
-    game->game_over = false;
+    /* Estado inicial */
+    game->state = GAME_STATE_INIT;
     game->frame_count = 0;
+    game->countdown = 3;
+    game->winner = 0;
+    
+    /* Copiar estados previos */
+    prev_ball = game->ball;
+    prev_paddle_left = game->paddle_left;
+    prev_paddle_right = game->paddle_right;
 }
 
-void game_update_player_paddle(Game *game, uint16_t distance)
-{
-    if (distance == 0xFFFF) return;
+void game_reset(game_t *game) {
+    game->paddle_left.score = 0;
+    game->paddle_right.score = 0;
+    game->winner = 0;
+    game_reset_ball(game, 0);
+    game->state = GAME_STATE_READY;
+}
 
-    // Limitar a rango válido
-    if (distance < MIN_DISTANCE) distance = MIN_DISTANCE;
-    if (distance > MAX_DISTANCE) distance = MAX_DISTANCE;
-
-    // SIMPLIFICADO: Un solo filtro exponencial suave
-    static float paddle_y_filtered = 160.0f;  // Centro de pantalla
-    static bool initialized = false;
+void game_reset_ball(game_t *game, int8_t direction) {
+    game->ball.x = GAME_WIDTH / 2;
+    game->ball.y = GAME_HEIGHT / 2;
     
-    if (!initialized) {
-        paddle_y_filtered = (float)(LCD_HEIGHT / 2 - PADDLE_HEIGHT / 2);
-        initialized = true;
+    /* Dirección: -1 izquierda, 1 derecha, 0 aleatorio */
+    if (direction == 0) {
+        direction = (rand() % 2) ? 1 : -1;
     }
-
-    // Mapear distancia a posición Y (invertir si es necesario)
-    float target_y = ((float)(distance - MIN_DISTANCE) * 
-                     (LCD_HEIGHT - PADDLE_HEIGHT)) /
-                     (float)(MAX_DISTANCE - MIN_DISTANCE);
-
-    // Filtro exponencial único con alpha más alto para respuesta rápida
-    const float alpha = 0.3f;  // Mayor = más rápido, menor = más suave
-    paddle_y_filtered = paddle_y_filtered * (1.0f - alpha) + target_y * alpha;
-
-    game->player.y = (int16_t)paddle_y_filtered;
-
-    // Limitar dentro del área
-    if (game->player.y < 0) game->player.y = 0;
-    if (game->player.y > LCD_HEIGHT - PADDLE_HEIGHT)
-        game->player.y = LCD_HEIGHT - PADDLE_HEIGHT;
+    
+    game->ball.vx = BALL_SPEED_X * direction;
+    
+    /* Velocidad Y aleatoria */
+    game->ball.vy = (rand() % 2) ? BALL_SPEED_Y : -BALL_SPEED_Y;
 }
 
-void game_update(Game *game) {
-    game->frame_count++;
+void game_update_paddle(game_t *game, paddle_t *paddle, int16_t position) {
+    /* Guardar posición anterior */
+    if (paddle == &game->paddle_left) {
+        prev_paddle_left = *paddle;
+    } else {
+        prev_paddle_right = *paddle;
+    }
     
-    /* Actualizar pelota */
+    /* Limitar posición al rango válido */
+    if (position < 0) {
+        position = 0;
+    }
+    if (position > GAME_HEIGHT - paddle->height) {
+        position = GAME_HEIGHT - paddle->height;
+    }
+    
+    paddle->y = position;
+}
+
+void game_update_ball(game_t *game) {
+    /* Guardar posición anterior */
+    prev_ball = game->ball;
+    
+    /* Actualizar posición */
     game->ball.x += game->ball.vx;
     game->ball.y += game->ball.vy;
+}
+
+bool game_check_collisions(game_t *game) {
+    bool goal = false;
     
-    /* Colisión con bordes superior/inferior */
-    if (game->ball.y <= 0 || game->ball.y >= LCD_HEIGHT - BALL_SIZE) {
+    /* Colisión con paredes superior e inferior */
+    if (game->ball.y - game->ball.size <= 0) {
+        game->ball.y = game->ball.size;
+        game->ball.vy = -game->ball.vy;
+    }
+    if (game->ball.y + game->ball.size >= GAME_HEIGHT) {
+        game->ball.y = GAME_HEIGHT - game->ball.size;
         game->ball.vy = -game->ball.vy;
     }
     
-    /* Colisión con jugador (izquierda) */
-    if (game->ball.x <= PADDLE_WIDTH && 
-        game->ball.y + BALL_SIZE >= game->player.y && 
-        game->ball.y <= game->player.y + PADDLE_HEIGHT) {
-        game->ball.vx = abs(game->ball.vx);
-        int16_t hit_pos = (game->ball.y - game->player.y) - (PADDLE_HEIGHT / 2);
-        game->ball.vy = hit_pos / 5;
-    }
-    
-    /* Colisión con CPU (derecha) */
-    if (game->ball.x >= LCD_WIDTH - PADDLE_WIDTH - BALL_SIZE && 
-        game->ball.y + BALL_SIZE >= game->cpu.y && 
-        game->ball.y <= game->cpu.y + PADDLE_HEIGHT) {
-        game->ball.vx = -abs(game->ball.vx);
-        int16_t hit_pos = (game->ball.y - game->cpu.y) - (PADDLE_HEIGHT / 2);
-        game->ball.vy = hit_pos / 5;
-    }
-    
-    /* Puntos - Pelota salió por la izquierda */
-    if (game->ball.x < 0) {
-        game->cpu.score++;
-        game->ball.x = LCD_WIDTH / 2;
-        game->ball.y = LCD_HEIGHT / 2;
-        game->ball.vx = BALL_SPEED_X;
-        game->ball.vy = BALL_SPEED_Y;
-    }
-    
-    /* Puntos - Pelota salió por la derecha */
-    if (game->ball.x > LCD_WIDTH) {
-        game->player.score++;
-        game->ball.x = LCD_WIDTH / 2;
-        game->ball.y = LCD_HEIGHT / 2;
-        game->ball.vx = -BALL_SPEED_X;
-        game->ball.vy = BALL_SPEED_Y;
-    }
-    
-    /* IA del CPU - Sigue la pelota */
-    if (game->ball.y < game->cpu.y + PADDLE_HEIGHT / 2) {
-        game->cpu.y -= PADDLE_SPEED - 1;
-    } else if (game->ball.y > game->cpu.y + PADDLE_HEIGHT / 2) {
-        game->cpu.y += PADDLE_SPEED - 1;
-    }
-    
-    /* Limitar CPU a la pantalla */
-    if (game->cpu.y < 0) game->cpu.y = 0;
-    if (game->cpu.y > LCD_HEIGHT - PADDLE_HEIGHT) {
-        game->cpu.y = LCD_HEIGHT - PADDLE_HEIGHT;
-    }
-    
-    /* Verificar victoria */
-    if (game->player.score >= WINNING_SCORE || game->cpu.score >= WINNING_SCORE) {
-        game->game_over = true;
-    }
-}
-
-void game_render(const Game *game, layer1_pixel *framebuffer) {
-    /* Limpiar pantalla */
-    clear_screen(framebuffer, COLOR_BLACK);
-    
-    /* Línea central punteada */
-    for (int16_t i = 0; i < LCD_HEIGHT; i += 15) {
-        draw_filled_rect(framebuffer, LCD_WIDTH / 2 - 1, i, 2, 8, COLOR_WHITE);
-    }
-    
-    /* Paleta del jugador (izquierda, verde) */
-    draw_filled_rect(framebuffer, 0, game->player.y, 
-                     PADDLE_WIDTH, PADDLE_HEIGHT, COLOR_GREEN);
-    
-    /* Paleta del CPU (derecha, roja) */
-    draw_filled_rect(framebuffer, LCD_WIDTH - PADDLE_WIDTH, game->cpu.y, 
-                     PADDLE_WIDTH, PADDLE_HEIGHT, COLOR_RED);
-    
-    /* Pelota (amarilla) */
-    draw_filled_rect(framebuffer, game->ball.x, game->ball.y, 
-                     BALL_SIZE, BALL_SIZE, COLOR_YELLOW);
-    
-    /* Marcadores */
-    draw_number(framebuffer, LCD_WIDTH / 2 - 40, 20, 
-               game->player.score, COLOR_GREEN);
-    draw_number(framebuffer, LCD_WIDTH / 2 + 20, 20, 
-               game->cpu.score, COLOR_RED);
-    
-    /* Mensaje de fin de juego */
-    if (game->game_over) {
-        // Fondo azul
-        draw_filled_rect(framebuffer, LCD_WIDTH / 2 - 80, 
-                        LCD_HEIGHT / 2 - 30, 160, 60, COLOR_BLUE);
-        
-        // Determinar ganador y mostrar mensaje
-        if (game->player.score >= WINNING_SCORE) {
-            draw_string(framebuffer, LCD_WIDTH / 2 - 50, 
-                       LCD_HEIGHT / 2 - 20, "YOU WIN", COLOR_YELLOW);
-        } else {
-            draw_string(framebuffer, LCD_WIDTH / 2 - 60, 
-                       LCD_HEIGHT / 2 - 20, "GAME OVER", COLOR_RED);
+    /* Colisión con paleta izquierda */
+    if (game->ball.vx < 0) {  // Solo si va hacia la izquierda
+        if (game->ball.x - game->ball.size <= game->paddle_left.x + game->paddle_left.width) {
+            if (game->ball.y >= game->paddle_left.y && 
+                game->ball.y <= game->paddle_left.y + game->paddle_left.height) {
+                
+                game->ball.x = game->paddle_left.x + game->paddle_left.width + game->ball.size;
+                game->ball.vx = -game->ball.vx;
+                
+                /* Modificar ángulo según dónde golpeó */
+                int16_t hit_pos = game->ball.y - (game->paddle_left.y + game->paddle_left.height / 2);
+                game->ball.vy = hit_pos / 5;
+            }
         }
     }
+    
+    /* Colisión con paleta derecha */
+    if (game->ball.vx > 0) {  // Solo si va hacia la derecha
+        if (game->ball.x + game->ball.size >= game->paddle_right.x) {
+            if (game->ball.y >= game->paddle_right.y && 
+                game->ball.y <= game->paddle_right.y + game->paddle_right.height) {
+                
+                game->ball.x = game->paddle_right.x - game->ball.size;
+                game->ball.vx = -game->ball.vx;
+                
+                /* Modificar ángulo según dónde golpeó */
+                int16_t hit_pos = game->ball.y - (game->paddle_right.y + game->paddle_right.height / 2);
+                game->ball.vy = hit_pos / 5;
+            }
+        }
+    }
+    
+    /* Verificar gol */
+    if (game->ball.x - game->ball.size <= 0) {
+        /* Gol para jugador 2 */
+        game->paddle_right.score++;
+        goal = true;
+    } else if (game->ball.x + game->ball.size >= GAME_WIDTH) {
+        /* Gol para jugador 1 */
+        game->paddle_left.score++;
+        goal = true;
+    }
+    
+    return goal;
 }
 
-void game_reset(Game *game) {
-    game_init(game);
+void game_update_state(game_t *game) {
+    game->frame_count++;
+    
+    switch (game->state) {
+        case GAME_STATE_INIT:
+            game->state = GAME_STATE_READY;
+            break;
+            
+        case GAME_STATE_READY:
+            /* Esperar comando de inicio */
+            break;
+            
+        case GAME_STATE_COUNTDOWN:
+            /* Countdown de 3 segundos (aproximado con frames) */
+            if (game->frame_count % 30 == 0) {  // Asumiendo 30 FPS
+                game->countdown--;
+                if (game->countdown == 0) {
+                    game->state = GAME_STATE_PLAYING;
+                    game->countdown = 3;  // Resetear para próxima vez
+                }
+            }
+            break;
+            
+        case GAME_STATE_PLAYING:
+            /* Actualizar física */
+            game_update_ball(game);
+            
+            /* Verificar colisiones */
+            if (game_check_collisions(game)) {
+                /* Hubo gol */
+                game->state = GAME_STATE_SCORE;
+                game->frame_count = 0;
+                
+                /* Verificar si alguien ganó */
+                if (game->paddle_left.score >= MAX_SCORE) {
+                    game->winner = 1;
+                } else if (game->paddle_right.score >= MAX_SCORE) {
+                    game->winner = 2;
+                }
+            }
+            break;
+            
+        case GAME_STATE_SCORE:
+            /* Mostrar animación de gol por ~2 segundos */
+            if (game->frame_count > 60) {  // 2 segundos a 30 FPS
+                if (game->winner != 0) {
+                    game->state = GAME_STATE_GAME_OVER;
+                } else {
+                    /* Resetear pelota y continuar */
+                    int8_t direction = (game->paddle_left.score > game->paddle_right.score) ? -1 : 1;
+                    game_reset_ball(game, direction);
+                    game->state = GAME_STATE_COUNTDOWN;
+                    game->frame_count = 0;
+                }
+            }
+            break;
+            
+        case GAME_STATE_GAME_OVER:
+            /* Esperar reset */
+            break;
+            
+        case GAME_STATE_PAUSED:
+            /* Esperar resume */
+            break;
+    }
 }
 
-bool game_is_active(const Game *game) {
-    return game->running && !game->game_over;
+void game_render(const game_t *game) {
+    /* No limpiar toda la pantalla para mejor performance */
+    /* Solo borrar posiciones anteriores y dibujar nuevas */
+    
+    /* Renderizar fondo (solo primera vez) */
+    static bool first_render = true;
+    if (first_render) {
+        lcd_clear(COLOR_BLACK);
+        game_render_center_line();
+        first_render = false;
+    }
+    
+    /* Borrar y redibujar paletas si cambiaron */
+    if (prev_paddle_left.y != game->paddle_left.y) {
+        rect_t rect = {prev_paddle_left.x, prev_paddle_left.y, 
+                       prev_paddle_left.width, prev_paddle_left.height};
+        lcd_fill_rect(&rect, COLOR_BLACK);
+        game_render_paddle_left(&game->paddle_left);
+    }
+    
+    if (prev_paddle_right.y != game->paddle_right.y) {
+        rect_t rect = {prev_paddle_right.x, prev_paddle_right.y,
+                       prev_paddle_right.width, prev_paddle_right.height};
+        lcd_fill_rect(&rect, COLOR_BLACK);
+        game_render_paddle_right(&game->paddle_right);
+    }
+    
+    /* Borrar pelota anterior */
+    lcd_fill_circle(prev_ball.x, prev_ball.y, prev_ball.size, COLOR_BLACK);
+    
+    /* Dibujar pelota nueva */
+    if (game->state == GAME_STATE_PLAYING || 
+        game->state == GAME_STATE_COUNTDOWN) {
+        game_render_ball(&game->ball);
+    }
+    
+    /* Renderizar marcador (siempre) */
+    game_render_score(game);
+    
+    /* Renderizar overlays según estado */
+    if (game->state == GAME_STATE_COUNTDOWN) {
+        game_render_countdown(game->countdown);
+    } else if (game->state == GAME_STATE_GAME_OVER) {
+        game_render_game_over(game->winner);
+    }
 }
 
-bool game_is_over(const Game *game) {
-    return game->game_over;
+void game_render_paddle_left(const paddle_t *paddle) {
+    rect_t rect = {paddle->x, paddle->y, paddle->width, paddle->height};
+    lcd_fill_rect(&rect, paddle->color);
+}
+
+void game_render_paddle_right(const paddle_t *paddle) {
+    rect_t rect = {paddle->x, paddle->y, paddle->width, paddle->height};
+    lcd_fill_rect(&rect, paddle->color);
+}
+
+void game_render_ball(const ball_t *ball) {
+    lcd_fill_circle(ball->x, ball->y, ball->size, ball->color);
+}
+
+void game_render_score(const game_t *game) {
+    /* Borrar área del marcador */
+    rect_t score_area = {0, 0, GAME_WIDTH, 20};
+    lcd_fill_rect(&score_area, COLOR_BLACK);
+    
+    /* Dibujar marcador */
+    char score_str[20];
+    
+    /* Jugador 1 */
+    lcd_draw_string(40, 5, "P1:", COLOR_GREEN, COLOR_BLACK);
+    lcd_draw_number(64, 5, game->paddle_left.score, COLOR_WHITE, COLOR_BLACK);
+    
+    /* Jugador 2 */
+    lcd_draw_string(140, 5, "P2:", COLOR_CYAN, COLOR_BLACK);
+    lcd_draw_number(164, 5, game->paddle_right.score, COLOR_WHITE, COLOR_BLACK);
+}
+
+void game_render_center_line(void) {
+    /* Línea punteada vertical en el centro */
+    for (int16_t y = 0; y < GAME_HEIGHT; y += 10) {
+        lcd_draw_vline(GAME_WIDTH / 2, y, 5, COLOR_DARKGRAY);
+    }
+}
+
+void game_render_game_over(uint8_t winner) {
+    /* Overlay semi-transparente (simulado con color oscuro) */
+    rect_t overlay = {40, GAME_HEIGHT/2 - 40, GAME_WIDTH - 80, 80};
+    lcd_fill_rect(&overlay, COLOR_DARKGRAY);
+    lcd_draw_rect(&overlay, COLOR_WHITE);
+    
+    /* Texto de Game Over */
+    lcd_draw_string(70, GAME_HEIGHT/2 - 20, "GAME OVER", COLOR_WHITE, COLOR_DARKGRAY);
+    
+    /* Ganador */
+    char msg[20];
+    if (winner == 1) {
+        lcd_draw_string(60, GAME_HEIGHT/2, "P1 WINS!", COLOR_GREEN, COLOR_DARKGRAY);
+    } else {
+        lcd_draw_string(60, GAME_HEIGHT/2, "P2 WINS!", COLOR_CYAN, COLOR_DARKGRAY);
+    }
+}
+
+void game_render_countdown(uint8_t count) {
+    if (count == 0) return;
+    
+    /* Dibujar número grande en el centro */
+    int16_t x = GAME_WIDTH / 2 - 4;
+    int16_t y = GAME_HEIGHT / 2 - 4;
+    
+    /* Escalar carácter 3x */
+    for (int dy = 0; dy < 24; dy += 3) {
+        for (int dx = 0; dx < 24; dx += 3) {
+            lcd_fill_rect(&(rect_t){x + dx - 12, y + dy - 12, 3, 3}, COLOR_YELLOW);
+        }
+    }
+    
+    lcd_draw_number(x, y, count, COLOR_YELLOW, COLOR_BLACK);
+}
+
+void game_start(game_t *game) {
+    if (game->state == GAME_STATE_READY) {
+        game->state = GAME_STATE_COUNTDOWN;
+        game->frame_count = 0;
+    }
+}
+
+void game_toggle_pause(game_t *game) {
+    if (game->state == GAME_STATE_PLAYING) {
+        game->state = GAME_STATE_PAUSED;
+    } else if (game->state == GAME_STATE_PAUSED) {
+        game->state = GAME_STATE_PLAYING;
+    }
+}
+
+bool game_is_playing(const game_t *game) {
+    return (game->state == GAME_STATE_PLAYING);
+}
+
+game_state_t game_get_state(const game_t *game) {
+    return game->state;
 }

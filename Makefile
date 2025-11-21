@@ -17,8 +17,11 @@ OPENCM3_DIR = libopencm3
 SRCS = $(SRCDIR)/main.c \
        $(SRCDIR)/ultrasonic.c \
        $(SRCDIR)/game_logic.c \
+	   $(LIBDIR)/gfx.c \
+	   $(SRCDIR)/lcd_graphics.c \
        $(LIBDIR)/clock.c \
        $(LIBDIR)/syscalls.c \
+	   $(LIBDIR)/font-7x12.c \
        $(LIBDIR)/sdram.c \
        $(LIBDIR)/lcd-spi.c \
        $(LIBDIR)/console.c
